@@ -10,17 +10,20 @@ import javax.swing.*;
 import java.io.BufferedReader;
 import java.io.File;
 import java.io.InputStreamReader;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Optional;
 
 public class Controller {
 
-    ModelInterface model;
-    ViewInterface view;
+    private ModelInterface model;
+    private ViewInterface view;
     private boolean unsavedChanges;
     private String basePath = null;
     private String savedFilePath = null;
     private Process executableProcess = null;
+    private boolean readOnly = false;
 
     public Controller() {
 
@@ -31,7 +34,7 @@ public class Controller {
 
    public void load() {
 
-        view.lock();
+       view.lock();
 
        boolean discard = discardUnsavedChangesIfAny("Discard unsaved changes?");
 
@@ -43,6 +46,8 @@ public class Controller {
                savedFilePath = path;
                model.load(path);
                view.refresh();
+               unsavedChanges = false;
+               readOnly = true;
                view.notify(MessageType.SUCCESS, "Opened " + path);
            }
        }
@@ -52,6 +57,11 @@ public class Controller {
    }
 
     public void save() {
+
+        if (!unsavedChanges) {
+            view.notify(MessageType.INFO, "Nothing to save");
+            return;
+        }
 
         if(savedFilePath == null) {
             File file = view.askForSavingFile(basePath);
@@ -68,9 +78,6 @@ public class Controller {
             }
 
             savedFilePath = file.getAbsolutePath();
-
-        } else {
-            // overwrite
 
         }
 
@@ -109,9 +116,7 @@ public class Controller {
     private boolean discardUnsavedChangesIfAny(String message) {
         if(isThereAnythingNotSaved()) {
             int result = JOptionPane.showConfirmDialog(null, message,  "Warning", JOptionPane.YES_NO_OPTION);
-            if(result == JOptionPane.NO_OPTION) {
-                return false;
-            }
+            return result != JOptionPane.NO_OPTION;
         }
         return true;
     }
@@ -129,13 +134,37 @@ public class Controller {
         return unsavedChanges && !model.isEmpty();
     }
 
+    private boolean askForDisablingReadOnly() {
+
+        int value = askForPossibilities("Read-only", "The map is currently in read-only mode. Would you like to unlock the possibility of editing it?",
+                new ArrayList<>(Arrays.asList("Yes, right now", "Maybe later")));
+
+        if (value == 0) {
+            readOnly = false;
+            return false;
+        } else {
+            return true;
+        }
+
+    }
+
     public void addVertex(int x, int y, VertexType vertexType, int load) {
+
+        if (readOnly && askForDisablingReadOnly()) {
+            return;
+        }
+
         view.notify(MessageType.INFO, "Added " + vertexType.toString() + " with load " + load +" in ("+x+", "+y+")");
         model.addVertex(x, y, vertexType, load);
         notifyChanges();
     }
 
     public void removeVertex(int x, int y) {
+
+        if (readOnly && askForDisablingReadOnly()) {
+            return;
+        }
+
         Vertex vertex = model.removeVertex(x, y);
         if(vertex != null) {
             view.notify(MessageType.INFO, "Removed " + vertex.getType() + " with load " + vertex.getLoad() + " in (" + vertex.getX() + ", " + vertex.getY() + ")");
@@ -193,85 +222,76 @@ public class Controller {
 
     public void bindToExecutable() {
 
-        Optional.ofNullable(view.showBindingInterface()).ifPresent(bindingBundle -> {
+        Optional.ofNullable(view.showBindingInterface()).ifPresent(bindingBundle -> new Thread(() -> {
 
-                new Thread(() -> {
+            try {
 
-                    try {
+                Runtime runtime = Runtime.getRuntime();
+                String command = bindingBundle.getExecutable() + " " + bindingBundle.getArguments();
+                System.out.println(command);
 
-                    Runtime runtime = Runtime.getRuntime();
-                    String command = bindingBundle.getExecutable() +" "+ bindingBundle.getArguments();
-                    System.out.println(command);
+                view.notify(MessageType.INFO, "Running " + bindingBundle.getExecutable() + " ... ");
+                view.lock();
+                view.lockRunExternalProgram();
 
-                    view.notify(MessageType.INFO, "Running "+ bindingBundle.getExecutable() + " ... ");
-                    view.lock();
-                    view.lockRunExternalProgram();
+                executableProcess = runtime.exec(command);
 
-                    executableProcess = runtime.exec(command);
+                BufferedReader stdInput = new BufferedReader(new InputStreamReader(executableProcess.getInputStream()));
 
-                    BufferedReader stdInput = new BufferedReader(new InputStreamReader(executableProcess.getInputStream()));
+                // read the output from the command
 
-                    // read the output from the command
-
-                    String s = null;
-                    Gson gson = new Gson();
+                String s;
+                Gson gson = new Gson();
 
 
-                    while ((s = stdInput.readLine()) != null) {
+                while ((s = stdInput.readLine()) != null) {
 
-                        System.out.println(s);
+                    System.out.println(s);
 
-                        if(s.startsWith("instance")){
-                            s = s.replaceFirst("instance", "");
+                    if (s.startsWith("instance")) {
+                        s = s.replaceFirst("instance", "");
 
-                            try {
-                                JSONVertex[] data = gson.fromJson(s, JSONVertex[].class);
-                                model.load(data);
+                        try {
+                            JSONVertex[] data = gson.fromJson(s, JSONVertex[].class);
+                            model.load(data);
 
-                            } catch (Exception e) {
-                                view.notify(MessageType.WARNING, e.getMessage());
-                            }
-
-
-                            view.notify(MessageType.SUCCESS, "Instance successfull loaded from json");
-
-                        } else if(s.startsWith("solution")) {
-
-                            s = s.replaceFirst("solution", "");
-
-
-                            try {
-                                JSONVertex[] data = gson.fromJson(s, JSONVertex[].class);
-                                view.setSolution(data);
-
-                            } catch (Exception e) {
-                                view.notify(MessageType.WARNING, e.getMessage());
-                            }
-
-
-
-
+                        } catch (Exception e) {
+                            view.notify(MessageType.WARNING, e.getMessage());
                         }
+
+
+                        view.notify(MessageType.SUCCESS, "Instance successfull loaded from json");
+
+                    } else if (s.startsWith("solution")) {
+
+                        s = s.replaceFirst("solution", "");
+
+
+                        try {
+                            JSONVertex[] data = gson.fromJson(s, JSONVertex[].class);
+                            view.setSolution(data);
+
+                        } catch (Exception e) {
+                            view.notify(MessageType.WARNING, e.getMessage());
+                        }
+
 
                     }
 
-
-                    view.notify(MessageType.SUCCESS, "Run completed!");
-                    view.unlock();
-                    view.unlockRunExternalProgram();
-
-                } catch (Exception e) {
-                     //   e.printStackTrace();
-                    view.notify(MessageType.ERROR, e.getMessage());
-
                 }
 
-                }).start();
 
+                view.notify(MessageType.SUCCESS, "Run completed!");
+                view.unlock();
+                view.unlockRunExternalProgram();
 
+            } catch (Exception e) {
+                //   e.printStackTrace();
+                view.notify(MessageType.ERROR, e.getMessage());
 
+            }
 
-        });
+        }).start());
 
 
     }

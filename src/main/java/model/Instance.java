@@ -49,7 +49,13 @@ public class Instance {
 
                 if(this.depot != null) {
                     // remove the depot if it exists
-                    mapping.get(new Position(depot.getX(), depot.getY())).remove(depot);
+                    Position position = new Position(depot.getX(), depot.getY());
+                    List<Vertex> list = mapping.get(position);
+                    list.remove(depot);
+                    if (list.isEmpty()) {
+                        mapping.remove(position);
+                    }
+
                 }
 
                 this.depot = vertex;
